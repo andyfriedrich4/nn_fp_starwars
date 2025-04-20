@@ -20,13 +20,20 @@ BASE_DIR = os.path.join(CUR_DIR, "data")
 TRAIN_CSV = os.path.join(BASE_DIR, "train_labels.csv")
 TEST_CSV = os.path.join(BASE_DIR, "test_labels.csv") # Seen characters, different images
 UNSEEN_CSV = os.path.join(BASE_DIR, "unseen_labels.csv") # Unseen characters
+MODEL_DIR = os.path.join(CUR_DIR, "models")
+PLOT_DIR = os.path.join(CUR_DIR, "plots")
+
+os.makedirs(MODEL_DIR, exist_ok=True)
+os.makedirs(PLOT_DIR, exist_ok=True)
 
 MODEL_NAME = "resnet34"
-NUM_CLASSES = 1 # Binary classification (Hero/Villain)
-BATCH_SIZE = 64 # Can likely increase this on a 3080 Ti, monitor VRAM usage
-NUM_EPOCHS = 50
-LEARNING_RATE = 0.001 # Often start higher for scratch training
-WEIGHT_DECAY = 1e-4 # Regularization is more important when training from scratch
+NUM_CLASSES = 1
+NUM_EPOCHS = 100 # We use early stopping so this is just an upper bound
+LEARNING_RATE = 0.001
+WEIGHT_DECAY = 1e-4
+
+BATCH_SIZE = 128
+NUM_WORKERS = 12
 
 class StarWarsDataset(Dataset):
     def __init__(self, csv_file, transform=None):
@@ -86,7 +93,7 @@ data_transforms = {
     ]),
 }
 
-# --- DataLoader (Identical to previous version) ---
+# --- DataLoader ---
 print("Creating Datasets and DataLoaders...")
 def collate_fn_skip_none(batch):
     batch = list(filter(lambda x: x is not None, batch))
@@ -99,9 +106,9 @@ test_dataset = StarWarsDataset(csv_file=TEST_CSV, transform=data_transforms['val
 unseen_dataset = StarWarsDataset(csv_file=UNSEEN_CSV, transform=data_transforms['val'])
 
 dataloaders = {
-    'train':  DataLoader(train_dataset,  batch_size=BATCH_SIZE, shuffle=True,  num_workers=8, collate_fn=collate_fn_skip_none, pin_memory=True),
-    'test':   DataLoader(test_dataset,   batch_size=BATCH_SIZE, shuffle=False, num_workers=8, collate_fn=collate_fn_skip_none, pin_memory=True),
-    'unseen': DataLoader(unseen_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=8, collate_fn=collate_fn_skip_none, pin_memory=True)
+    'train':  DataLoader(train_dataset,  batch_size=BATCH_SIZE, shuffle=True,  num_workers=NUM_WORKERS, collate_fn=collate_fn_skip_none, pin_memory=True),
+    'test':   DataLoader(test_dataset,   batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, collate_fn=collate_fn_skip_none, pin_memory=True),
+    'unseen': DataLoader(unseen_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, collate_fn=collate_fn_skip_none, pin_memory=True)
 }
 
 dataset_sizes = {'train': len(train_dataset), 'test': len(test_dataset), 'unseen': len(unseen_dataset)}
@@ -115,51 +122,48 @@ print(f"Using device: {device}")
 if MODEL_NAME == "resnet18":
     model = models.resnet18(weights=None)
 elif MODEL_NAME == "resnet34":
-     model = models.resnet34(weights=None)
+    model = models.resnet34(weights=None)
 elif MODEL_NAME == "resnet50":
-     model = models.resnet50(weights=None)
-# Add other architectures here if needed (e.g., VGG, DenseNet)
-# elif MODEL_NAME == "vgg16_bn":
-#     model = models.vgg16_bn(weights=None)
-#     num_ftrs = model.classifier[6].in_features
-#     model.classifier[6] = nn.Linear(num_ftrs, NUM_CLASSES) # Adjust VGG classifier
-# elif MODEL_NAME == "densenet121":
-#     model = models.densenet121(weights=None)
-#     num_ftrs = model.classifier.in_features
-#     model.classifier = nn.Linear(num_ftrs, NUM_CLASSES) # Adjust DenseNet classifier
+    model = models.resnet50(weights=None)
 else:
     raise ValueError("Unsupported model name")
 
-# Adjust the final layer for ResNet models (if not handled above for other types)
-if 'resnet' in MODEL_NAME:
-    num_ftrs = model.fc.in_features
-    model.fc = nn.Linear(num_ftrs, NUM_CLASSES)
+num_ftrs = model.fc.in_features
+model.fc = nn.Linear(num_ftrs, NUM_CLASSES)
 
 model = model.to(device)
 
 optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
-criterion = nn.BCEWithLogitsLoss() # Still appropriate for binary classification
+criterion = nn.BCEWithLogitsLoss()
 
-# Learning Rate Scheduler - Consider StepLR or CosineAnnealingLR for scratch training
-# Option 1: StepLR
+# Learning Rate Scheduler
 # scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=15, gamma=0.1) # Decrease LR every 15 epochs
-# Option 2: Cosine Annealing
 scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS, eta_min=LEARNING_RATE/100)
-# Option 3: ReduceLROnPlateau (still viable)
 # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.2, patience=5, verbose=True)
 
-
-def train_model(model, criterion, optimizer, scheduler, num_epochs=25):
+def train_model(model, criterion, optimizer, scheduler, num_epochs=25, patience=10): # Added patience parameter
     since = time.time()
+
+    best_val_loss = float('inf')
+    epochs_no_improve = 0
+    early_stop_triggered = False
+
     best_model_wts = copy.deepcopy(model.state_dict())
-    best_acc = 0.0
+    best_epoch = -1
+
     history = {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': []}
 
+    print(f"Starting training for up to {num_epochs} epochs with patience={patience}")
+
     for epoch in range(num_epochs):
+        if early_stop_triggered:
+            print("Early stopping triggered in previous epoch. Halting.")
+            break
+
         print(f'Epoch {epoch}/{num_epochs - 1}')
         print('-' * 10)
 
-        for phase in ['train', 'test']: # Use 'test' set for validation during training
+        for phase in ['train', 'test']:
             if phase == 'train':
                 model.train()
             else:
@@ -203,31 +207,45 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=25):
             if phase == 'train':
                 history['train_loss'].append(epoch_loss)
                 history['train_acc'].append(epoch_acc.item())
-                 # Step the scheduler after training epoch if it's not ReduceLROnPlateau
+                 # Step scheduler based on epoch (for StepLR, CosineAnnealingLR)
                 if scheduler and not isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
                      scheduler.step()
             else:
                 history['val_loss'].append(epoch_loss)
                 history['val_acc'].append(epoch_acc.item())
-                val_acc = epoch_acc
+                current_val_loss = epoch_loss
 
-                # Step ReduceLROnPlateau scheduler based on validation metric
+                # Step ReduceLROnPlateau scheduler based on validation loss/metric if using it
                 if scheduler and isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
-                     scheduler.step(val_acc)
+                     scheduler.step(current_val_loss)
 
-                if val_acc > best_acc:
-                    best_acc = val_acc
+                if current_val_loss < best_val_loss:
+                    print(f"Validation loss decreased ({best_val_loss:.4f} --> {current_val_loss:.4f}). Saving model...")
+                    best_val_loss = current_val_loss
                     best_model_wts = copy.deepcopy(model.state_dict())
-                    print(f"*** New best model saved with validation accuracy: {best_acc:.4f} ***")
+                    epochs_no_improve = 0
+                    best_epoch = epoch
+                else:
+                    epochs_no_improve += 1
+                    print(f"Validation loss did not decrease. Patience: {epochs_no_improve}/{patience}")
+
+                if epochs_no_improve >= patience:
+                    print(f"Early stopping triggered after {patience} epochs without improvement on validation loss.")
+                    early_stop_triggered = True
+                    break
         print()
+
 
     time_elapsed = time.time() - since
     print(f'Training complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
-    print(f'Best val Acc: {best_acc:4f}')
+    if best_epoch != -1:
+        print(f'Best Validation Loss: {best_val_loss:4f} achieved at epoch {best_epoch}')
+        print(f"Loading best model weights from epoch {best_epoch}")
+        model.load_state_dict(best_model_wts)
+    else:
+        print("Training stopped before the first validation epoch completed or no improvement ever occurred.")
 
-    model.load_state_dict(best_model_wts)
     return model, history
-
 
 def evaluate_model(model, dataloader, criterion, phase_name="Evaluation"):
     model.eval()
@@ -284,7 +302,9 @@ def evaluate_model(model, dataloader, criterion, phase_name="Evaluation"):
     return eval_loss, eval_acc.item()
 
 if __name__ == "__main__":
-    trained_model, history = train_model(model, criterion, optimizer, scheduler, num_epochs=NUM_EPOCHS)
+    EARLY_STOPPING_PATIENCE = 15
+
+    trained_model, history = train_model(model, criterion, optimizer, scheduler, num_epochs=NUM_EPOCHS, patience=EARLY_STOPPING_PATIENCE)
 
     plt.figure(figsize=(12, 5))
     plt.subplot(1, 2, 1)
@@ -308,7 +328,7 @@ if __name__ == "__main__":
     evaluate_model(trained_model, dataloaders['unseen'], criterion, phase_name="Evaluation on Unseen Set (Unseen Characters)")
 
     cur_date_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    model_save_path = os.path.join(BASE_DIR, f'{MODEL_NAME}_{cur_date_time}.pth')
+    model_save_path = os.path.join(MODEL_DIR, f'{MODEL_NAME}_{cur_date_time}.pth')
     torch.save(trained_model.state_dict(), model_save_path)
     print(f"Model saved to {model_save_path}")
     print("\nFinished.")
