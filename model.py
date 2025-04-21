@@ -4,7 +4,7 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, models
 
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support, confusion_matrix
+from sklearn.metrics import precision_recall_fscore_support, confusion_matrix
 from PIL import Image
 
 import pandas as pd
@@ -95,18 +95,20 @@ def create_dataloaders(train_csv, test_csv, unseen_csv, num_workers=8, batch_siz
     }
 
     print("\nCreating Datasets and DataLoaders...")
-    train_dataset = StarWarsDataset(csv_file=train_csv, transform=data_transforms['train'])
-    test_dataset = StarWarsDataset(csv_file=test_csv, transform=data_transforms['val'])
+    train_dataset  = StarWarsDataset(csv_file=train_csv,  transform=data_transforms['train'])
+    test_dataset   = StarWarsDataset(csv_file=test_csv,   transform=data_transforms['val'])
     unseen_dataset = StarWarsDataset(csv_file=unseen_csv, transform=data_transforms['val'])
 
     dataloaders = {
-        'train':  DataLoader(train_dataset,  batch_size=batch_size, shuffle=True,  num_workers=num_workers, collate_fn=collate_fn_skip_none, pin_memory=True),
-        'test':   DataLoader(test_dataset,   batch_size=batch_size, shuffle=False, num_workers=num_workers, collate_fn=collate_fn_skip_none, pin_memory=True),
+        'train' : DataLoader(train_dataset,  batch_size=batch_size, shuffle=True,  num_workers=num_workers, collate_fn=collate_fn_skip_none, pin_memory=True),
+        'test'  : DataLoader(test_dataset,   batch_size=batch_size, shuffle=False, num_workers=num_workers, collate_fn=collate_fn_skip_none, pin_memory=True),
         'unseen': DataLoader(unseen_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, collate_fn=collate_fn_skip_none, pin_memory=True)
     }
     print(f"Using Batch Size: {batch_size}, Num Workers: {num_workers}")
 
-    dataset_sizes = {'train': len(train_dataset), 'test': len(test_dataset), 'unseen': len(unseen_dataset)}
+    dataset_sizes = {'train': len(train_dataset),
+                     'test': len(test_dataset),
+                     'unseen': len(unseen_dataset)}
     print(f"Dataset sizes: {dataset_sizes}")
 
     return dataloaders
@@ -122,12 +124,12 @@ def collate_fn_skip_none(batch):
 def train_model(model, criterion, optimizer, scheduler, num_epochs=100, patience=15):
     since = time.time()
 
-    best_val_loss = float('inf')
-    epochs_no_improve = 0
+    best_val_loss        = float('inf')
+    epochs_no_improve    = 0
     early_stop_triggered = False
 
     best_model_wts = copy.deepcopy(model.state_dict())
-    best_epoch = -1
+    best_epoch     = -1
 
     history = {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': []}
 
@@ -228,12 +230,12 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=100, patience
 
 def evaluate_model(model, dataloader, criterion, phase_name="Evaluation", plot_dir='plots', start_time='default_time'):
     model.eval()
-    running_loss = 0.0
+    running_loss     = 0.0
     running_corrects = 0
-    total_samples = 0
-    all_labels = []
-    all_preds = []
-    device = next(model.parameters()).device
+    total_samples    = 0
+    all_labels       = []
+    all_preds        = []
+    device           = next(model.parameters()).device
 
     print(f"\n--- {phase_name} ---")
 
@@ -290,29 +292,30 @@ def evaluate_model(model, dataloader, criterion, phase_name="Evaluation", plot_d
 
 
 if __name__ == "__main__":
-    CUR_DIR = os.getcwd()
-    BASE_DIR = os.path.join(CUR_DIR, "data")
+    CUR_DIR    = os.getcwd()
+    BASE_DIR   = os.path.join(CUR_DIR, "data")
 
-    TRAIN_CSV = os.path.join(BASE_DIR, "train_labels.csv")
-    TEST_CSV = os.path.join(BASE_DIR, "test_labels.csv") # Seen characters, different images
+    TRAIN_CSV  = os.path.join(BASE_DIR, "train_labels.csv")
+    TEST_CSV   = os.path.join(BASE_DIR, "test_labels.csv") # Seen characters, different images
     UNSEEN_CSV = os.path.join(BASE_DIR, "unseen_labels.csv") # Unseen characters
-    MODEL_DIR = os.path.join(CUR_DIR, "models")
-    PLOT_DIR = os.path.join(CUR_DIR, "plots")
 
-    START_TIME = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    MODEL_DIR  = os.path.join(CUR_DIR,  "models")
+    PLOT_DIR   = os.path.join(CUR_DIR,  "plots")
 
     os.makedirs(MODEL_DIR, exist_ok=True)
     os.makedirs(PLOT_DIR, exist_ok=True)
 
+    START_TIME = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
     EARLY_STOPPING_PATIENCE = 25
 
-    MODEL_NAME = "resnet34"
-    NUM_CLASSES = 1
-    NUM_EPOCHS = 100 # We use early stopping so this is just an upper bound
+    MODEL_NAME    = "resnet34"
+    NUM_CLASSES   = 1
+    NUM_EPOCHS    = 100 # We use early stopping so this is just an upper bound
     LEARNING_RATE = 0.001
-    WEIGHT_DECAY = 1e-4
+    WEIGHT_DECAY  = 1e-4
 
-    BATCH_SIZE = 128
+    BATCH_SIZE  = 128
     NUM_WORKERS = 12
 
     parser = argparse.ArgumentParser(description='Train or evaluate a Star Wars Hero/Villain classifier.')
@@ -323,9 +326,9 @@ if __name__ == "__main__":
     parser.add_argument('--num_workers', type=int, default=NUM_WORKERS, help=f'Number of workers for dataloaders (default: {NUM_WORKERS}); 4, 8, 12 are all good options. Adjust according to core count of CPU.')
     args = parser.parse_args()
 
-    BATCH_SIZE = args.batch_size
+    BATCH_SIZE  = args.batch_size
     NUM_WORKERS = args.num_workers
-    MODEL_NAME = args.arch
+    MODEL_NAME  = args.arch
 
     START_TIME = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
@@ -343,8 +346,8 @@ if __name__ == "__main__":
         model = model.to(device)
 
         optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
-        # scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=15, gamma=0.1) # Decrease LR every 15 epochs
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS, eta_min=LEARNING_RATE/100)
+        # scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=15, gamma=0.1) # Decrease LR every 15 epochs
         # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.2, patience=5, verbose=True)
 
         trained_model, history = train_model(model, criterion, optimizer, scheduler, num_epochs=NUM_EPOCHS, patience=EARLY_STOPPING_PATIENCE)
