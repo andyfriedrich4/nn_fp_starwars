@@ -19,29 +19,6 @@ import copy
 import datetime
 import argparse
 
-CUR_DIR = os.getcwd()
-BASE_DIR = os.path.join(CUR_DIR, "data")
-TRAIN_CSV = os.path.join(BASE_DIR, "train_labels.csv")
-TEST_CSV = os.path.join(BASE_DIR, "test_labels.csv") # Seen characters, different images
-UNSEEN_CSV = os.path.join(BASE_DIR, "unseen_labels.csv") # Unseen characters
-MODEL_DIR = os.path.join(CUR_DIR, "models")
-PLOT_DIR = os.path.join(CUR_DIR, "plots")
-
-START_TIME = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-
-os.makedirs(MODEL_DIR, exist_ok=True)
-os.makedirs(PLOT_DIR, exist_ok=True)
-
-EARLY_STOPPING_PATIENCE = 25
-
-MODEL_NAME = "resnet34"
-NUM_CLASSES = 1
-NUM_EPOCHS = 100 # We use early stopping so this is just an upper bound
-LEARNING_RATE = 0.001
-WEIGHT_DECAY = 1e-4
-
-BATCH_SIZE = 128
-NUM_WORKERS = 12
 
 def create_model(model_name, num_classes):
     """Creates the specified model architecture."""
@@ -95,6 +72,46 @@ class StarWarsDataset(Dataset):
         return image, label_tensor
 
 
+def create_dataloaders(train_csv, test_csv, unseen_csv, num_workers=8, batch_size=64):
+    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                     std=[0.229, 0.224, 0.225])
+
+	# Data augmentation
+    data_transforms = {
+        'train': transforms.Compose([
+            transforms.RandomResizedCrop(224, scale=(0.6, 1.0)),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomRotation(20),
+            transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2, hue=0.1),
+            transforms.ToTensor(),
+            normalize
+        ]),
+        'val': transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            normalize
+        ]),
+    }
+
+    print("\nCreating Datasets and DataLoaders...")
+    train_dataset = StarWarsDataset(csv_file=train_csv, transform=data_transforms['train'])
+    test_dataset = StarWarsDataset(csv_file=test_csv, transform=data_transforms['val'])
+    unseen_dataset = StarWarsDataset(csv_file=unseen_csv, transform=data_transforms['val'])
+
+    dataloaders = {
+        'train':  DataLoader(train_dataset,  batch_size=batch_size, shuffle=True,  num_workers=num_workers, collate_fn=collate_fn_skip_none, pin_memory=True),
+        'test':   DataLoader(test_dataset,   batch_size=batch_size, shuffle=False, num_workers=num_workers, collate_fn=collate_fn_skip_none, pin_memory=True),
+        'unseen': DataLoader(unseen_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, collate_fn=collate_fn_skip_none, pin_memory=True)
+    }
+    print(f"Using Batch Size: {batch_size}, Num Workers: {num_workers}")
+
+    dataset_sizes = {'train': len(train_dataset), 'test': len(test_dataset), 'unseen': len(unseen_dataset)}
+    print(f"Dataset sizes: {dataset_sizes}")
+
+    return dataloaders
+
+
 def collate_fn_skip_none(batch):
     batch = list(filter(lambda x: x is not None, batch))
     if not batch:
@@ -102,7 +119,7 @@ def collate_fn_skip_none(batch):
     return torch.utils.data.dataloader.default_collate(batch)
 
 
-def train_model(model, criterion, optimizer, scheduler, num_epochs=25, patience=10): # Added patience parameter
+def train_model(model, criterion, optimizer, scheduler, num_epochs=100, patience=15):
     since = time.time()
 
     best_val_loss = float('inf')
@@ -209,7 +226,7 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=25, patience=
     return model, history
 
 
-def evaluate_model(model, dataloader, criterion, phase_name="Evaluation"):
+def evaluate_model(model, dataloader, criterion, phase_name="Evaluation", plot_dir='plots', start_time='default_time'):
     model.eval()
     running_loss = 0.0
     running_corrects = 0
@@ -261,7 +278,7 @@ def evaluate_model(model, dataloader, criterion, phase_name="Evaluation"):
     plt.title(f'{phase_name} Confusion Matrix')
 
     safe_phase_name = phase_name.replace(" ", "_").replace("(", "").replace(")", "").replace("/", "_")
-    cm_filename = os.path.join(PLOT_DIR, f'confusion_matrix_{safe_phase_name}_{START_TIME}.png')
+    cm_filename = os.path.join(plot_dir, f'confusion_matrix_{safe_phase_name}_{start_time}.png')
     try:
         plt.savefig(cm_filename, bbox_inches='tight')
         print(f"Confusion matrix saved to {cm_filename}")
@@ -273,6 +290,31 @@ def evaluate_model(model, dataloader, criterion, phase_name="Evaluation"):
 
 
 if __name__ == "__main__":
+    CUR_DIR = os.getcwd()
+    BASE_DIR = os.path.join(CUR_DIR, "data")
+
+    TRAIN_CSV = os.path.join(BASE_DIR, "train_labels.csv")
+    TEST_CSV = os.path.join(BASE_DIR, "test_labels.csv") # Seen characters, different images
+    UNSEEN_CSV = os.path.join(BASE_DIR, "unseen_labels.csv") # Unseen characters
+    MODEL_DIR = os.path.join(CUR_DIR, "models")
+    PLOT_DIR = os.path.join(CUR_DIR, "plots")
+
+    START_TIME = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    os.makedirs(PLOT_DIR, exist_ok=True)
+
+    EARLY_STOPPING_PATIENCE = 25
+
+    MODEL_NAME = "resnet34"
+    NUM_CLASSES = 1
+    NUM_EPOCHS = 100 # We use early stopping so this is just an upper bound
+    LEARNING_RATE = 0.001
+    WEIGHT_DECAY = 1e-4
+
+    BATCH_SIZE = 128
+    NUM_WORKERS = 12
+
     parser = argparse.ArgumentParser(description='Train or evaluate a Star Wars Hero/Villain classifier.')
     parser.add_argument('--mode', type=str, default='train', choices=['train', 'eval'], help='Operation mode: "train" or "eval" (default: train)')
     parser.add_argument('--load_model', type=str, default=None, help='Path to a saved model state_dict file (.pth) for evaluation.')
@@ -290,40 +332,7 @@ if __name__ == "__main__":
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                    std=[0.229, 0.224, 0.225])
-
-    data_transforms = {
-        'train': transforms.Compose([
-            transforms.RandomResizedCrop(224, scale=(0.6, 1.0)),
-            transforms.RandomHorizontalFlip(),
-            transforms.RandomRotation(20),
-            transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2, hue=0.1),
-            transforms.ToTensor(),
-            normalize
-        ]),
-        'val': transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            normalize
-        ]),
-    }
-
-    print("\nCreating Datasets and DataLoaders...")
-    train_dataset = StarWarsDataset(csv_file=TRAIN_CSV, transform=data_transforms['train'])
-    test_dataset = StarWarsDataset(csv_file=TEST_CSV, transform=data_transforms['val'])
-    unseen_dataset = StarWarsDataset(csv_file=UNSEEN_CSV, transform=data_transforms['val'])
-
-    dataloaders = {
-        'train':  DataLoader(train_dataset,  batch_size=BATCH_SIZE, shuffle=True,  num_workers=NUM_WORKERS, collate_fn=collate_fn_skip_none, pin_memory=True),
-        'test':   DataLoader(test_dataset,   batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, collate_fn=collate_fn_skip_none, pin_memory=True),
-        'unseen': DataLoader(unseen_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, collate_fn=collate_fn_skip_none, pin_memory=True)
-    }
-    print(f"Using Batch Size: {BATCH_SIZE}, Num Workers: {NUM_WORKERS}")
-
-    dataset_sizes = {'train': len(train_dataset), 'test': len(test_dataset), 'unseen': len(unseen_dataset)}
-    print(f"Dataset sizes: {dataset_sizes}")
+    dataloaders = create_dataloaders(TRAIN_CSV, TEST_CSV, UNSEEN_CSV, num_workers=NUM_WORKERS, batch_size=BATCH_SIZE)
 
     criterion = nn.BCEWithLogitsLoss()
 
@@ -369,8 +378,8 @@ if __name__ == "__main__":
             print(f"Error saving training history plot: {e}")
         plt.close()
 
-        evaluate_model(trained_model, dataloaders['test'], criterion, phase_name=f"Post-trainig Eval on Test Set (Seen, Arch: {MODEL_NAME})")
-        evaluate_model(trained_model, dataloaders['unseen'], criterion, phase_name=f"Post-training Eval on Unseen Set (Unseen, Arch: {MODEL_NAME})")
+        evaluate_model(trained_model, dataloaders['test'], criterion, phase_name=f"Post-trainig Eval on Test Set (Arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME)
+        evaluate_model(trained_model, dataloaders['unseen'], criterion, phase_name=f"Post-training Eval on Unseen Set (Arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME)
 
         model_save_path = os.path.join(MODEL_DIR, f'{MODEL_NAME}_{START_TIME}.pth')
         torch.save(trained_model.state_dict(), model_save_path)
@@ -389,7 +398,6 @@ if __name__ == "__main__":
 
         print(f"Loading model weights from: {args.load_model}")
         try:
-            # Load state dict onto the correct device directly
             model_to_evaluate.load_state_dict(torch.load(args.load_model, map_location=device))
         except Exception as e:
             print(f"Error loading state dict: {e}")
@@ -399,8 +407,8 @@ if __name__ == "__main__":
         model_to_evaluate = model_to_evaluate.to(device)
         model_to_evaluate.eval()
 
-        evaluate_model(model_to_evaluate, dataloaders['test'], criterion, phase_name=f"Eval on Test Set (Seen, Loaded model arch: {MODEL_NAME})")
-        evaluate_model(model_to_evaluate, dataloaders['unseen'], criterion, phase_name=f"Eval on Unseen Set (Unseen, Loaded model arch: {MODEL_NAME})")
+        evaluate_model(model_to_evaluate, dataloaders['test'], criterion, phase_name=f"Eval on Test Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME)
+        evaluate_model(model_to_evaluate, dataloaders['unseen'], criterion, phase_name=f"Eval on Unseen Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME)
     else:
         print(f"Error: Invalid mode '{args.mode}' specified.")
 
