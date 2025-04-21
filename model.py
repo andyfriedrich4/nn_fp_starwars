@@ -12,7 +12,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from pathlib import *
+from pathlib import Path
+
 import os
 import time
 import copy
@@ -76,7 +77,7 @@ def create_dataloaders(train_csv, test_csv, unseen_csv, num_workers=8, batch_siz
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
 
-	# Data augmentation
+    # Data augmentation
     data_transforms = {
         'train': transforms.Compose([
             transforms.RandomResizedCrop(224, scale=(0.6, 1.0)),
@@ -154,7 +155,8 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=100, patience
             total_samples = 0
 
             for inputs, labels in dataloaders[phase]:
-                if inputs.nelement() == 0: continue
+                if inputs.nelement() == 0:
+                    continue
 
                 inputs = inputs.to(device)
                 labels = labels.to(device).unsqueeze(1)
@@ -187,7 +189,7 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=100, patience
             if phase == 'train':
                 history['train_loss'].append(epoch_loss)
                 history['train_acc'].append(epoch_acc.item())
-                 # Step scheduler based on epoch (for StepLR, CosineAnnealingLR)
+                # Step scheduler based on epoch (for StepLR, CosineAnnealingLR)
                 if scheduler and not isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
                      scheduler.step()
             else:
@@ -197,7 +199,7 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=100, patience
 
                 # Step ReduceLROnPlateau scheduler based on validation loss/metric if using it
                 if scheduler and isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
-                     scheduler.step(current_val_loss)
+                    scheduler.step(current_val_loss)
 
                 if current_val_loss < best_val_loss:
                     print(f"Validation loss decreased ({best_val_loss:.4f} --> {current_val_loss:.4f}). Saving model...")
@@ -214,7 +216,6 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=100, patience
                     early_stop_triggered = True
                     break
         print()
-
 
     time_elapsed = time.time() - since
     print(f'Training complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
@@ -241,7 +242,8 @@ def evaluate_model(model, dataloader, criterion, phase_name="Evaluation", plot_d
 
     with torch.no_grad():
         for inputs, labels in dataloader:
-            if inputs.nelement() == 0: continue
+            if inputs.nelement() == 0:
+                continue
             inputs = inputs.to(device)
             labels = labels.to(device).unsqueeze(1)
             outputs = model(inputs)
@@ -296,8 +298,8 @@ if __name__ == "__main__":
     BASE_DIR   = os.path.join(CUR_DIR, "data")
 
     TRAIN_CSV  = os.path.join(BASE_DIR, "train_labels.csv")
-    TEST_CSV   = os.path.join(BASE_DIR, "test_labels.csv") # Seen characters, different images
-    UNSEEN_CSV = os.path.join(BASE_DIR, "unseen_labels.csv") # Unseen characters
+    TEST_CSV   = os.path.join(BASE_DIR, "test_labels.csv")    # Seen characters, different images
+    UNSEEN_CSV = os.path.join(BASE_DIR, "unseen_labels.csv")  # Unseen characters
 
     MODEL_DIR  = os.path.join(CUR_DIR,  "models")
     PLOT_DIR   = os.path.join(CUR_DIR,  "plots")
@@ -311,7 +313,7 @@ if __name__ == "__main__":
 
     MODEL_NAME    = "resnet34"
     NUM_CLASSES   = 1
-    NUM_EPOCHS    = 100 # We use early stopping so this is just an upper bound
+    NUM_EPOCHS    = 100  # We use early stopping so this is just an upper bound
     LEARNING_RATE = 0.001
     WEIGHT_DECAY  = 1e-4
 
@@ -394,8 +396,8 @@ if __name__ == "__main__":
             print("Error: --load_model path must be specified in eval mode.")
             exit(1)
         if not os.path.exists(args.load_model):
-             print(f"Error: Model file not found at {args.load_model}")
-             exit(1)
+            print(f"Error: Model file not found at {args.load_model}")
+            exit(1)
 
         model_to_evaluate = create_model(MODEL_NAME, NUM_CLASSES)
 
