@@ -350,6 +350,84 @@ def saliency_map(model, dataloader, device, phase_name="Saliency Map", plot_dir=
     print(f"Averaged saliency map saved to {plot_path}")
 
 
+def occlude_right(image_batch, occlusion_ratio):
+    B, C, H, W = image_batch.shape
+    assert H == W, "Images must be square"
+
+    occlusion_start = int(W * (1-occlusion_ratio))
+    
+    # Generate random noise for the occluded area for the entire batch
+    noise = torch.rand((B, C, H, W - occlusion_start), dtype=image_batch.dtype, device=image_batch.device)
+    
+    # Clone the original image batch to modify
+    occluded_batch = image_batch.clone()
+    
+    # Replace the rightmost 25% of each image with noise
+    occluded_batch[:, :, :, occlusion_start:] = noise
+    
+    return occluded_batch
+
+def occlude_center(image_batch, occlusion_ratio):
+    B, C, H, W = image_batch.shape
+    assert H == W, "Images must be square"
+    
+    # Ratio defines the fraction of width/height for the central occlusion
+    occlusion_width = int(W * occlusion_ratio)
+    occlusion_height = int(H * occlusion_ratio)
+    
+    start_x = (W - occlusion_width) // 2
+    start_y = (H - occlusion_height) // 2
+    
+    # Generate random noise for the occluded area for the entire batch
+    noise = torch.rand((B, C, occlusion_height, occlusion_width), dtype=image_batch.dtype, device=image_batch.device)
+    
+    # Clone the original image batch to modify
+    occluded_batch = image_batch.clone()
+    
+    # Replace the center of each image with noise
+    occluded_batch[:, :, start_y:start_y + occlusion_height, start_x:start_x + occlusion_width] = noise
+    
+    return occluded_batch
+
+def occlude_edges(image_batch, occlusion_ratio):
+    B, C, H, W = image_batch.shape
+    assert H == W, "Images must be square"
+
+    # Ratio defines the thickness of the border relative to width/height
+    occlusion_thickness_h = int(H * occlusion_ratio)
+    occlusion_thickness_w = int(W * occlusion_ratio)
+
+    # Ensure thickness isn't too large (<= half the dimension)
+    occlusion_thickness_h = min(occlusion_thickness_h, H // 2)
+    occlusion_thickness_w = min(occlusion_thickness_w, W // 2)
+
+    # Generate random noise for the occluded edges for the entire batch
+    noise_top = torch.rand((B, C, occlusion_thickness_h, W), dtype=image_batch.dtype, device=image_batch.device)
+    noise_bottom = torch.rand((B, C, occlusion_thickness_h, W), dtype=image_batch.dtype, device=image_batch.device)
+
+    side_noise_height = H - 2 * occlusion_thickness_h
+    # Handle cases where thickness is large
+    if side_noise_height < 0: side_noise_height = 0
+
+    noise_left = torch.rand((B, C, side_noise_height, occlusion_thickness_w), dtype=image_batch.dtype, device=image_batch.device)
+    noise_right = torch.rand((B, C, side_noise_height, occlusion_thickness_w), dtype=image_batch.dtype, device=image_batch.device)
+
+    # Clone the original image batch to modify
+    occluded_batch = image_batch.clone()
+
+    # Replace the top and bottom edges with noise
+    # Apply top and bottom noise
+    occluded_batch[:, :, :occlusion_thickness_h, :] = noise_top
+    occluded_batch[:, :, H - occlusion_thickness_h:, :] = noise_bottom
+
+    # Replace the left and right edges with noise
+    # Apply side noise only if side_noise_height > 0 (avoids corners)
+    if side_noise_height > 0:
+        occluded_batch[:, :, occlusion_thickness_h:H - occlusion_thickness_h, :occlusion_thickness_w] = noise_left
+        occluded_batch[:, :, occlusion_thickness_h:H - occlusion_thickness_h, W - occlusion_thickness_w:] = noise_right
+
+    return occluded_batch
+
 def perturbate_model(model, dataloader, criterion, phase_name="Perturbation", plot_dir='plots', start_time='default_time', occlusion_rate=0.25, occluded_area='right'):
     model.eval()
     running_loss     = 0.0
@@ -359,6 +437,9 @@ def perturbate_model(model, dataloader, criterion, phase_name="Perturbation", pl
     all_preds        = []
     device           = next(model.parameters()).device
 
+    assert occlusion_rate >= 0, "Invalid Occlusion Rate"
+    assert occlusion_rate < 1, "Invalid Occlusion Rate"
+
     print(f"\n--- {phase_name} ---")
 
     with torch.no_grad():
@@ -366,26 +447,27 @@ def perturbate_model(model, dataloader, criterion, phase_name="Perturbation", pl
             if inputs.nelement() == 0:
                 continue
 
-            def occlude_right(image_batch, occlusion_ratio):
-                B, C, H, W = image_batch.shape
-                assert H == W, "Images must be square"
-
-                occlusion_start = int(W * (1-occlusion_ratio))
-                
-                # Generate random noise for the occluded area for the entire batch
-                noise = torch.rand((B, C, H, W - occlusion_start), dtype=image_batch.dtype, device=image_batch.device)
-                
-                # Clone the original image batch to modify
-                occluded_batch = image_batch.clone()
-                
-                # Replace the rightmost 25% of each image with noise
-                occluded_batch[:, :, :, occlusion_start:] = noise
-                
-                return occluded_batch
-
             if occluded_area == 'right':
                 inputs = occlude_right(inputs, occlusion_rate)
                 print(f'Occluding {occlusion_rate * 100}% of {occluded_area}')
+            elif occluded_area == 'center':
+                # square rooted such that the occluded area is of `occlusion_rate` of image
+                inputs = occlude_center(inputs, occlusion_rate ** (1/2))
+                print(f'Occluding {occlusion_rate * 100}% of {occluded_area}')
+            elif occluded_area == 'edges':
+                # let original occlusion rate be k, then remainder area is (1-2k)^2
+                # let desired occlusion rate BY PERCENTAGE OF AREA OCCLUDED be b
+                # let desired occlusion rate for occlude_edges be x
+                # then (1-2x)^2=1-b; because b<1, 1-2x = sqrt(1-b), so x = (1-sqrt(1-b))/2
+                inputs = occlude_edges(inputs, (1 - (1 - occlusion_rate) ** (1/2)) / 2)
+                print(f'Occluding {occlusion_rate * 100}% of {occluded_area}')
+            elif occluded_area == 'visualize':
+                # Call the standalone visualization function
+                visualize_occlusions(model, dataloader, plot_dir, start_time, device, occlusion_rate=occlusion_rate)
+                # Skip the rest of the evaluation after visualization
+                return None, None
+            else:
+                raise ValueError(f'Invalid occluded_area specified: {occluded_area}. Must be one of "right", "center", "edges", or "visualize".')
 
             inputs = inputs.to(device)
             labels = labels.to(device).unsqueeze(1)
@@ -433,6 +515,84 @@ def perturbate_model(model, dataloader, criterion, phase_name="Perturbation", pl
     plt.close()
 
     return eval_loss, eval_acc.item()
+
+
+def visualize_occlusions(model, dataloader, plot_dir, start_time, device, occlusion_rate=0.25):
+    """
+    Visualizes the effect of different occlusion methods on a sample image.
+    Takes the first image from the first batch provided by the dataloader.
+    """
+    print(f"\n--- Visualizing Occlusions (Rate: {occlusion_rate}) ---")
+    model.eval()
+    with torch.no_grad():
+        try:
+            inputs, _ = next(iter(dataloader)) # Get the first batch
+            if inputs.nelement() == 0:
+                print("First batch is empty, cannot visualize.")
+                return
+        except StopIteration:
+            print("Dataloader is empty, cannot visualize.")
+            return
+
+        inputs = inputs.to(device)
+        original_image = inputs[0].cpu()  # Take the first image from the batch
+
+        # Apply occlusion methods using the standalone functions
+        occluded_right_batch = occlude_right(original_image.unsqueeze(0), occlusion_rate)
+        occluded_center_batch = occlude_center(original_image.unsqueeze(0), occlusion_rate ** (1/2))
+        # see perturbate_model() for details on this occlusion rate
+        occluded_edges_batch = occlude_edges(original_image.unsqueeze(0), (1 - (1 - occlusion_rate) ** (1/2)) / 2)
+
+        # Get the occluded images (remove batch dim)
+        occluded_right = occluded_right_batch[0].cpu()
+        occluded_center = occluded_center_batch[0].cpu()
+        occluded_edges = occluded_edges_batch[0].cpu()
+
+        # Denormalize for visualization if necessary (assuming standard ImageNet normalization)
+        # This requires knowing the normalization parameters used in create_dataloaders
+        mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+
+        def denormalize(tensor):
+            tensor = tensor * std + mean
+            tensor = torch.clamp(tensor, 0, 1) # Clamp values to [0, 1]
+            return tensor.permute(1, 2, 0).numpy() # Convert to HWC for matplotlib
+
+        # Convert images to numpy for visualization
+        original_np = denormalize(original_image)
+        occluded_right_np = denormalize(occluded_right)
+        occluded_center_np = denormalize(occluded_center)
+        occluded_edges_np = denormalize(occluded_edges)
+
+        # Plot the images
+        fig, axes = plt.subplots(1, 4, figsize=(16, 4))
+        fig.suptitle(f'Occlusion Visualization (Rate: {occlusion_rate})', fontsize=16)
+
+        axes[0].imshow(original_np)
+        axes[0].set_title('Original')
+        axes[0].axis('off')
+
+        axes[1].imshow(occluded_right_np)
+        axes[1].set_title('Occluded Right')
+        axes[1].axis('off')
+
+        axes[2].imshow(occluded_center_np)
+        axes[2].set_title('Occluded Center')
+        axes[2].axis('off')
+
+        axes[3].imshow(occluded_edges_np)
+        axes[3].set_title('Occluded Edges')
+        axes[3].axis('off')
+
+        # Save the plot
+        os.makedirs(plot_dir, exist_ok=True)
+        plot_path = os.path.join(plot_dir, f'occlusion_visualization_rate_{occlusion_rate}_{start_time}.png')
+        try:
+            plt.savefig(plot_path, bbox_inches='tight')
+            print(f"Occlusion visualization saved to {plot_path}")
+        except Exception as e:
+            print(f"Error saving occlusion visualization plot: {e}")
+        plt.close(fig)
 
 
 if __name__ == "__main__":
@@ -556,8 +716,13 @@ if __name__ == "__main__":
 
         # Generate and save the averaged saliency map
         if args.mode == 'perturbate':
+            perturbate_model(model_to_evaluate, dataloaders['unseen'], criterion, phase_name=f"Perturbation on Unseen Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME, occluded_area='visualize')
             # saliency_map(model_to_evaluate, dataloaders['test'], device, phase_name=f"Saliency Map on Test Set", plot_dir=PLOT_DIR, start_time=START_TIME, target_class=0)
-            perturbate_model(model_to_evaluate, dataloaders['unseen'], criterion, phase_name=f"Perturbation on Unseen Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME)
+            # evaluate_model(model_to_evaluate, dataloaders['unseen'], criterion, phase_name=f"Eval on Unseen Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME)
+            # perturbate_model(model_to_evaluate, dataloaders['unseen'], criterion, phase_name=f"Perturbation on Unseen Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME)
+            # perturbate_model(model_to_evaluate, dataloaders['unseen'], criterion, phase_name=f"Perturbation on Unseen Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME, occluded_area='right')
+            # perturbate_model(model_to_evaluate, dataloaders['unseen'], criterion, phase_name=f"Perturbation on Unseen Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME, occluded_area='center')
+            perturbate_model(model_to_evaluate, dataloaders['unseen'], criterion, phase_name=f"Perturbation on Unseen Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME, occluded_area='edges')
         else:
             evaluate_model(model_to_evaluate, dataloaders['test'], criterion, phase_name=f"Eval on Test Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME)
             evaluate_model(model_to_evaluate, dataloaders['unseen'], criterion, phase_name=f"Eval on Unseen Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME)
