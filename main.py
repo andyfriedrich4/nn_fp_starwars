@@ -716,13 +716,13 @@ if __name__ == "__main__":
 
         # Generate and save the averaged saliency map
         if args.mode == 'perturbate':
-            perturbate_model(model_to_evaluate, dataloaders['unseen'], criterion, phase_name=f"Perturbation on Unseen Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME, occluded_area='visualize')
-            # saliency_map(model_to_evaluate, dataloaders['test'], device, phase_name=f"Saliency Map on Test Set", plot_dir=PLOT_DIR, start_time=START_TIME, target_class=0)
-            # evaluate_model(model_to_evaluate, dataloaders['unseen'], criterion, phase_name=f"Eval on Unseen Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME)
-            # perturbate_model(model_to_evaluate, dataloaders['unseen'], criterion, phase_name=f"Perturbation on Unseen Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME)
-            # perturbate_model(model_to_evaluate, dataloaders['unseen'], criterion, phase_name=f"Perturbation on Unseen Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME, occluded_area='right')
-            # perturbate_model(model_to_evaluate, dataloaders['unseen'], criterion, phase_name=f"Perturbation on Unseen Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME, occluded_area='center')
-            perturbate_model(model_to_evaluate, dataloaders['unseen'], criterion, phase_name=f"Perturbation on Unseen Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME, occluded_area='edges')
+            occlusion_rate = 0.5
+            perturbate_model(model_to_evaluate, dataloaders['unseen'], criterion, phase_name=f"Perturbation on Unseen Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME, occlusion_rate=occlusion_rate, occluded_area='visualize')
+            saliency_map(model_to_evaluate, dataloaders['test'], device, phase_name=f"Saliency Map on Test Set", plot_dir=PLOT_DIR, start_time=START_TIME, target_class=0)
+            evaluate_model(model_to_evaluate, dataloaders['unseen'], criterion, phase_name=f"Eval on Unseen Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME)
+            perturbate_model(model_to_evaluate, dataloaders['unseen'], criterion, phase_name=f"Perturbation on Unseen Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME, occlusion_rate=occlusion_rate, occluded_area='right')
+            perturbate_model(model_to_evaluate, dataloaders['unseen'], criterion, phase_name=f"Perturbation on Unseen Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME, occlusion_rate=occlusion_rate, occluded_area='center')
+            perturbate_model(model_to_evaluate, dataloaders['unseen'], criterion, phase_name=f"Perturbation on Unseen Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME, occlusion_rate=occlusion_rate, occluded_area='edges')
         else:
             evaluate_model(model_to_evaluate, dataloaders['test'], criterion, phase_name=f"Eval on Test Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME)
             evaluate_model(model_to_evaluate, dataloaders['unseen'], criterion, phase_name=f"Eval on Unseen Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME)
