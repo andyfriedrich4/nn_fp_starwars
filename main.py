@@ -19,6 +19,7 @@ import time
 import copy
 import datetime
 import argparse
+from tqdm import tqdm
 
 
 def create_model(model_name, num_classes):
@@ -241,7 +242,7 @@ def evaluate_model(model, dataloader, criterion, phase_name="Evaluation", plot_d
     print(f"\n--- {phase_name} ---")
 
     with torch.no_grad():
-        for inputs, labels in dataloader:
+        for inputs, labels in tqdm(dataloader, desc=f"{phase_name} Progress", leave=False):
             if inputs.nelement() == 0:
                 continue
             inputs = inputs.to(device)
@@ -293,6 +294,65 @@ def evaluate_model(model, dataloader, criterion, phase_name="Evaluation", plot_d
     return eval_loss, eval_acc.item()
 
 
+
+def perturbate_model(model, dataloader, device, phase_name="Evaluation", plot_dir='plots', start_time='default_time', target_class=None):
+    """
+    Generates an averaged saliency map across the entire dataloader and saves the plot.
+    """
+    print(f"\n--- {phase_name} ---")
+    model.eval()
+    averaged_saliency_map = None
+    num_images = 0
+
+    for inputs, _ in tqdm(dataloader, desc="Generating Saliency Maps"):
+        inputs = inputs.to(device)
+        for input_image in inputs:
+            input_image.requires_grad = True
+            output = model(input_image.unsqueeze(0))  # Add batch dimension
+
+            if target_class is None:
+                target_class = torch.argmax(output).item()
+                print(f"No target class specified; using target class {target_class}")
+
+            # Compute the gradient of the target class output with respect to the input image
+            gradient = torch.autograd.grad(output[0, target_class], input_image)[0]
+
+            # Aggregate the gradients (e.g., take the absolute value or square)
+            saliency_map = torch.abs(gradient).mean(dim=0)
+
+            # Normalize the saliency map to [0, 1]
+            saliency_map = (saliency_map - saliency_map.min()) / (saliency_map.max() - saliency_map.min())
+
+            if averaged_saliency_map is None:
+                averaged_saliency_map = saliency_map
+            else:
+                averaged_saliency_map += saliency_map
+            num_images += 1
+
+    # Average the saliency map
+    averaged_saliency_map /= num_images
+
+    # Convert to numpy for visualization
+    saliency_map_np = averaged_saliency_map.cpu().numpy()
+
+    # Plot the saliency map
+    plt.figure(figsize=(8, 8))
+    plt.imshow(saliency_map_np, cmap='hot')
+    plt.axis('off')
+    plt.title('Averaged Saliency Map')
+
+    # Save the plot
+    os.makedirs(plot_dir, exist_ok=True)
+    plot_path = os.path.join(plot_dir, 'averaged_saliency_map.png')
+    plt.savefig(plot_path, bbox_inches='tight')
+    plt.close()
+
+    print(f"Averaged saliency map saved to {plot_path}_{start_time}")
+
+
+    print("\nFinished.")
+
+
 if __name__ == "__main__":
     CUR_DIR    = os.getcwd()
     BASE_DIR   = os.path.join(CUR_DIR, "data")
@@ -321,7 +381,7 @@ if __name__ == "__main__":
     NUM_WORKERS = 12
 
     parser = argparse.ArgumentParser(description='Train or evaluate a Star Wars Hero/Villain classifier.')
-    parser.add_argument('--mode', type=str, default='train', choices=['train', 'eval'], help='Operation mode: "train" or "eval" (default: train)')
+    parser.add_argument('--mode', type=str, default='train', choices=['train', 'eval', 'perturbate'], help='Operation mode: "train", "eval", "perturbate" (default: train)')
     parser.add_argument('--load_model', type=str, default=None, help='Path to a saved model state_dict file (.pth) for evaluation.')
     parser.add_argument('--arch', type=str, default=MODEL_NAME, choices=['resnet18', 'resnet34', 'resnet50'], help=f'Model architecture to use or evaluate (required if mode is eval and different from default {MODEL_NAME}).')
     parser.add_argument('--batch_size', type=int, default=BATCH_SIZE, help=f'Batch size for dataloaders (default: {BATCH_SIZE}); 32, 64, 128 are all good options. Adjust according to VRAM capacity')
@@ -390,7 +450,7 @@ if __name__ == "__main__":
         torch.save(trained_model.state_dict(), model_save_path)
         print(f"Trained model saved to {model_save_path}")
 
-    elif args.mode == 'eval':
+    elif args.mode == 'eval' or args.mode == 'perturbate':
         print(f"\n--- Running in Evaluation Mode (Arch: {MODEL_NAME}) ---")
         if not args.load_model:
             print("Error: --load_model path must be specified in eval mode.")
@@ -412,9 +472,13 @@ if __name__ == "__main__":
         model_to_evaluate = model_to_evaluate.to(device)
         model_to_evaluate.eval()
 
-        evaluate_model(model_to_evaluate, dataloaders['test'], criterion, phase_name=f"Eval on Test Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME)
-        evaluate_model(model_to_evaluate, dataloaders['unseen'], criterion, phase_name=f"Eval on Unseen Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME)
+        # Generate and save the averaged saliency map
+        if args.mode == 'perturbate':
+            perturbate_model(model_to_evaluate, dataloaders['test'], device, phase_name=f"Perturbation on Test Set", plot_dir=PLOT_DIR, start_time=START_TIME)
+
+        else:
+            evaluate_model(model_to_evaluate, dataloaders['test'], criterion, phase_name=f"Eval on Test Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME)
+            evaluate_model(model_to_evaluate, dataloaders['unseen'], criterion, phase_name=f"Eval on Unseen Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME)
     else:
         print(f"Error: Invalid mode '{args.mode}' specified.")
 
-    print("\nFinished.")
