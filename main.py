@@ -295,7 +295,7 @@ def evaluate_model(model, dataloader, criterion, phase_name="Evaluation", plot_d
 
 
 
-def perturbate_model(model, dataloader, device, phase_name="Evaluation", plot_dir='plots', start_time='default_time', target_class=None):
+def saliency_map(model, dataloader, device, phase_name="Saliency Map", plot_dir='plots', start_time='default_time', target_class=None):
     """
     Generates an averaged saliency map across the entire dataloader and saves the plot.
     """
@@ -339,18 +339,100 @@ def perturbate_model(model, dataloader, device, phase_name="Evaluation", plot_di
     plt.figure(figsize=(8, 8))
     plt.imshow(saliency_map_np, cmap='hot')
     plt.axis('off')
-    plt.title('Averaged Saliency Map')
+    plt.title(f'Averaged Saliency Map For Data Class {target_class}')
 
     # Save the plot
     os.makedirs(plot_dir, exist_ok=True)
-    plot_path = os.path.join(plot_dir, 'averaged_saliency_map.png')
+    plot_path = os.path.join(plot_dir, f'averaged_saliency_map_class_{target_class}_{start_time}.png')
     plt.savefig(plot_path, bbox_inches='tight')
     plt.close()
 
-    print(f"Averaged saliency map saved to {plot_path}_{start_time}")
+    print(f"Averaged saliency map saved to {plot_path}")
 
 
-    print("\nFinished.")
+def perturbate_model(model, dataloader, criterion, phase_name="Perturbation", plot_dir='plots', start_time='default_time', occlusion_rate=0.25, occluded_area='right'):
+    model.eval()
+    running_loss     = 0.0
+    running_corrects = 0
+    total_samples    = 0
+    all_labels       = []
+    all_preds        = []
+    device           = next(model.parameters()).device
+
+    print(f"\n--- {phase_name} ---")
+
+    with torch.no_grad():
+        for inputs, labels in tqdm(dataloader, desc=f"{phase_name} Progress", leave=False):
+            if inputs.nelement() == 0:
+                continue
+
+            def occlude_right(image_batch, occlusion_ratio):
+                B, C, H, W = image_batch.shape
+                assert H == W, "Images must be square"
+
+                occlusion_start = int(W * (1-occlusion_ratio))
+                
+                # Generate random noise for the occluded area for the entire batch
+                noise = torch.rand((B, C, H, W - occlusion_start), dtype=image_batch.dtype, device=image_batch.device)
+                
+                # Clone the original image batch to modify
+                occluded_batch = image_batch.clone()
+                
+                # Replace the rightmost 25% of each image with noise
+                occluded_batch[:, :, :, occlusion_start:] = noise
+                
+                return occluded_batch
+
+            if occluded_area == 'right':
+                inputs = occlude_right(inputs, occlusion_rate)
+                print(f'Occluding {occlusion_rate * 100}% of {occluded_area}')
+
+            inputs = inputs.to(device)
+            labels = labels.to(device).unsqueeze(1)
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            preds_class = (torch.sigmoid(outputs) > 0.5).float()
+            running_loss += loss.item() * inputs.size(0)
+            running_corrects += torch.sum(preds_class == labels.data)
+            total_samples += labels.size(0)
+            all_labels.extend(labels.cpu().numpy().flatten())
+            all_preds.extend(preds_class.cpu().numpy().flatten())
+
+    if total_samples == 0:
+        print("No samples found for evaluation.")
+        return None, None
+
+    eval_loss = running_loss / total_samples
+    eval_acc = running_corrects.double() / total_samples
+    print(f'Loss: {eval_loss:.4f} Acc: {eval_acc:.4f}')
+
+    all_labels_int = np.array(all_labels).astype(int)
+    all_preds_int = np.array(all_preds).astype(int)
+    precision, recall, f1, _ = precision_recall_fscore_support(all_labels_int, all_preds_int, average='binary', zero_division=0)
+    print(f'Precision: {precision:.4f}')
+    print(f'Recall: {recall:.4f}')
+    print(f'F1-Score: {f1:.4f}')
+
+    cm = confusion_matrix(all_labels_int, all_preds_int)
+    print("Confusion Matrix:")
+    print(cm)
+
+    plt.figure(figsize=(6, 5))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=['Hero', 'Villain'], yticklabels=['Hero', 'Villain'])
+    plt.xlabel('Predicted Label')
+    plt.ylabel('True Label')
+    plt.title(f'{phase_name} Confusion Matrix')
+
+    safe_phase_name = phase_name.replace(" ", "_").replace("(", "").replace(")", "").replace("/", "_")
+    cm_filename = os.path.join(plot_dir, f'confusion_matrix_occlusion_{occluded_area}_{occlusion_rate}_{safe_phase_name}_{start_time}.png')
+    try:
+        plt.savefig(cm_filename, bbox_inches='tight')
+        print(f"Confusion matrix saved to {cm_filename}")
+    except Exception as e:
+        print(f"Error saving confusion matrix plot: {e}")
+    plt.close()
+
+    return eval_loss, eval_acc.item()
 
 
 if __name__ == "__main__":
@@ -474,8 +556,8 @@ if __name__ == "__main__":
 
         # Generate and save the averaged saliency map
         if args.mode == 'perturbate':
-            perturbate_model(model_to_evaluate, dataloaders['test'], device, phase_name=f"Perturbation on Test Set", plot_dir=PLOT_DIR, start_time=START_TIME)
-
+            # saliency_map(model_to_evaluate, dataloaders['test'], device, phase_name=f"Saliency Map on Test Set", plot_dir=PLOT_DIR, start_time=START_TIME, target_class=0)
+            perturbate_model(model_to_evaluate, dataloaders['unseen'], criterion, phase_name=f"Perturbation on Unseen Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME)
         else:
             evaluate_model(model_to_evaluate, dataloaders['test'], criterion, phase_name=f"Eval on Test Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME)
             evaluate_model(model_to_evaluate, dataloaders['unseen'], criterion, phase_name=f"Eval on Unseen Set (Loaded model arch {MODEL_NAME})", plot_dir=PLOT_DIR, start_time=START_TIME)
